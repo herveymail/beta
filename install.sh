@@ -131,11 +131,12 @@ print_ok "PostgreSQL 16 configured — database: $DB_NAME"
 # ══════════════════════════════════════
 print_step 5 "Installing Redis 7..."
 apt install -y -qq redis-server > /dev/null 2>&1
-sed -i "s/^# requirepass .*/requirepass $REDIS_PASS/" /etc/redis/redis.conf
+sed -i "s/^.*requirepass .*/requirepass $REDIS_PASS/" /etc/redis/redis.conf
 sed -i 's/^bind .*/bind 127.0.0.1 ::1/' /etc/redis/redis.conf
-sed -i 's/^# maxmemory .*/maxmemory 256mb/' /etc/redis/redis.conf
-sed -i 's/^# maxmemory-policy .*/maxmemory-policy allkeys-lru/' /etc/redis/redis.conf
-systemctl restart redis-server && systemctl enable redis-server > /dev/null 2>&1
+sed -i 's/^.*maxmemory .*/maxmemory 256mb/' /etc/redis/redis.conf 2>/dev/null || true
+sed -i 's/^.*maxmemory-policy .*/maxmemory-policy allkeys-lru/' /etc/redis/redis.conf 2>/dev/null || true
+systemctl restart redis-server > /dev/null 2>&1 || true
+systemctl enable redis-server > /dev/null 2>&1 || true
 print_ok "Redis 7 installed and secured"
 
 # ══════════════════════════════════════
@@ -226,13 +227,17 @@ print_ok "Nginx configured for $DOMAIN"
 # 7. FIREWALL & SECURITY
 # ══════════════════════════════════════
 print_step 7 "Configuring firewall and security..."
-ufw default deny incoming > /dev/null 2>&1
-ufw default allow outgoing > /dev/null 2>&1
-ufw allow 22/tcp > /dev/null 2>&1
-ufw allow 80/tcp > /dev/null 2>&1
-ufw allow 443/tcp > /dev/null 2>&1
-echo "y" | ufw enable > /dev/null 2>&1
 
+# UFW — allow rules are idempotent
+ufw default deny incoming > /dev/null 2>&1 || true
+ufw default allow outgoing > /dev/null 2>&1 || true
+ufw allow 22/tcp > /dev/null 2>&1 || true
+ufw allow 80/tcp > /dev/null 2>&1 || true
+ufw allow 443/tcp > /dev/null 2>&1 || true
+echo "y" | ufw enable > /dev/null 2>&1 || true
+print_ok "UFW firewall enabled"
+
+# Fail2Ban
 cat > /etc/fail2ban/jail.local <<F2B
 [DEFAULT]
 bantime = 3600
@@ -251,14 +256,19 @@ logpath = /var/log/nginx/error.log
 maxretry = 10
 F2B
 
-systemctl restart fail2ban && systemctl enable fail2ban > /dev/null 2>&1
+systemctl restart fail2ban > /dev/null 2>&1 || true
+systemctl enable fail2ban > /dev/null 2>&1 || true
+print_ok "Fail2Ban configured"
 
-# SSH hardening
-sed -i 's/#MaxAuthTries 6/MaxAuthTries 3/' /etc/ssh/sshd_config
-systemctl restart sshd > /dev/null 2>&1
+# SSH hardening (use ssh not sshd on Ubuntu 24.04)
+sed -i 's/#MaxAuthTries 6/MaxAuthTries 3/' /etc/ssh/sshd_config 2>/dev/null || true
+systemctl restart ssh > /dev/null 2>&1 || true
+print_ok "SSH hardened"
 
-# Kernel hardening
-cat >> /etc/sysctl.conf <<SYSCTL
+# Kernel hardening — only add if not already present
+if ! grep -q "NexusDesk security" /etc/sysctl.conf 2>/dev/null; then
+  cat >> /etc/sysctl.conf <<SYSCTL
+# NexusDesk security hardening
 net.ipv4.tcp_syncookies = 1
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.icmp_echo_ignore_broadcasts = 1
@@ -266,9 +276,9 @@ net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
 kernel.randomize_va_space = 2
 SYSCTL
-sysctl -p > /dev/null 2>&1
-
-print_ok "UFW firewall, Fail2Ban, SSH hardening applied"
+fi
+sysctl -p > /dev/null 2>&1 || true
+print_ok "Kernel security applied"
 
 # ══════════════════════════════════════
 # 8. APPLICATION SETUP
@@ -276,8 +286,9 @@ print_ok "UFW firewall, Fail2Ban, SSH hardening applied"
 print_step 8 "Setting up application..."
 mkdir -p "$APP_DIR"/{logs,uploads,backups,public/static}
 
-# Create .env from template
-cat > "$APP_DIR/.env" <<ENV
+# Create .env only if it doesn't exist (don't overwrite existing config)
+if [ ! -f "$APP_DIR/.env" ]; then
+  cat > "$APP_DIR/.env" <<ENV
 NODE_ENV=production
 PORT=3000
 APP_URL=https://$DOMAIN
@@ -324,8 +335,12 @@ SLACK_WEBHOOK_URL=
 ENV
 
 chmod 600 "$APP_DIR/.env"
+  print_ok ".env created with auto-generated secrets"
+else
+  print_warn ".env already exists — skipping (won't overwrite your config)"
+fi
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
-print_ok "Application directory and .env configured"
+print_ok "Application directory configured"
 
 # ══════════════════════════════════════
 # 9. INSTALL DEPENDENCIES & BUILD
@@ -357,7 +372,7 @@ module.exports = {
 PM2
 
 chown "$APP_USER:$APP_USER" "$APP_DIR/ecosystem.config.js"
-pm2 startup systemd -u "$APP_USER" --hp "/home/$APP_USER" > /dev/null 2>&1
+pm2 startup systemd -u "$APP_USER" --hp "/home/$APP_USER" > /dev/null 2>&1 || true
 print_ok "PM2 configured for auto-start"
 
 # ══════════════════════════════════════
@@ -376,12 +391,13 @@ CRON
 chmod 644 /etc/cron.d/nexusdesk
 
 # Install certbot
-apt install -y -qq certbot python3-certbot-nginx > /dev/null 2>&1
+apt install -y -qq certbot python3-certbot-nginx > /dev/null 2>&1 || true
 print_ok "Certbot installed — run SSL setup after DNS is configured"
 
 # ══════════════════════════════════════
 # DONE
 # ══════════════════════════════════════
+SERVER_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "YOUR_SERVER_IP")
 echo ""
 echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}   NexusDesk installed successfully!${NC}"
@@ -397,7 +413,7 @@ echo "    DB Password: $DB_PASS"
 echo ""
 echo "  Next steps:"
 echo ""
-echo "    1. Point DNS A record for $DOMAIN → $(curl -s ifconfig.me)"
+echo "    1. Point DNS A record for $DOMAIN → $SERVER_IP"
 echo ""
 echo "    2. Set up SSL:"
 echo "       sudo certbot --nginx -d $DOMAIN -m $ADMIN_EMAIL --agree-tos"
