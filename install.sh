@@ -1,7 +1,7 @@
 #!/bin/bash
 # ════════════════════════════════════════════════════════════════
 #  NexusDesk MSP Platform — Quick Install
-#  Usage: git clone <repo> /opt/nexusdesk && cd /opt/nexusdesk && sudo ./install.sh
+#  Usage: git clone https://github.com/herveymail/beta.git /opt/nexusdesk && cd /opt/nexusdesk && sudo ./install.sh
 #  Target: Ubuntu 22.04 / 24.04 LTS on DigitalOcean
 # ════════════════════════════════════════════════════════════════
 
@@ -96,11 +96,17 @@ print_ok "Node.js $(node -v), npm $(npm -v), PM2 installed"
 # ══════════════════════════════════════
 print_step 4 "Installing PostgreSQL 16..."
 if ! command -v psql &>/dev/null; then
-  sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-  curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg > /dev/null 2>&1
-  apt update -qq && apt install -y -qq postgresql-16 postgresql-client-16 > /dev/null 2>&1
+  # Import GPG key properly for Ubuntu 24.04+
+  curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+  # Add repo with signed-by reference
+  echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+  apt update -qq
+  apt install -y -qq postgresql-16 postgresql-client-16 > /dev/null 2>&1
 fi
-systemctl start postgresql && systemctl enable postgresql > /dev/null 2>&1
+# Wait for PostgreSQL to be ready
+systemctl start postgresql
+systemctl enable postgresql > /dev/null 2>&1
+sleep 2
 
 sudo -u postgres psql -q <<EOF
 DO \$\$
